@@ -13,6 +13,12 @@ const ColorFormat = enum {
     hsv,
 };
 
+const Cli = struct {
+    autocopy: bool = false,
+    format: ColorFormat = .hex,
+    lowercase_hex: bool = false,
+};
+
 const Screenshot = struct {
     width: u32 = 0,
     height: u32 = 0,
@@ -48,8 +54,7 @@ const State = struct {
     cursor_x: i32 = -1,
     cursor_y: i32 = -1,
     running: bool = true,
-    autocopy: bool = false,
-    format: ColorFormat = .hex,
+    cli: Cli,
     allocator: std.mem.Allocator,
     render_buffers: [2]RenderBuffer = .{ .{}, .{} },
     cursor_shape_manager: ?*wp.CursorShapeManagerV1 = null,
@@ -455,10 +460,15 @@ fn pointerListener(
                     var len_no_nl: usize = 0;
                     var len_nl: usize = 0;
 
-                    switch (state.format) {
+                    switch (state.cli.format) {
                         .hex => {
-                            len_no_nl = (std.fmt.bufPrint(&buf_no_nl, "#{X:0>2}{X:0>2}{X:0>2}", .{ red, green, blue }) catch return).len;
-                            len_nl = (std.fmt.bufPrint(&buf_nl, "#{X:0>2}{X:0>2}{X:0>2}\n", .{ red, green, blue }) catch return).len;
+                            if (state.cli.lowercase_hex) {
+                                len_no_nl = (std.fmt.bufPrint(&buf_no_nl, "#{x:0>2}{x:0>2}{x:0>2}", .{ red, green, blue }) catch return).len;
+                                len_nl = (std.fmt.bufPrint(&buf_nl, "#{x:0>2}{x:0>2}{x:0>2}\n", .{ red, green, blue }) catch return).len;
+                            } else {
+                                len_no_nl = (std.fmt.bufPrint(&buf_no_nl, "#{X:0>2}{X:0>2}{X:0>2}", .{ red, green, blue }) catch return).len;
+                                len_nl = (std.fmt.bufPrint(&buf_nl, "#{X:0>2}{X:0>2}{X:0>2}\n", .{ red, green, blue }) catch return).len;
+                            }
                         },
                         .rgb => {
                             len_no_nl = (std.fmt.bufPrint(&buf_no_nl, "rgb({d}, {d}, {d})", .{ red, green, blue }) catch return).len;
@@ -486,7 +496,7 @@ fn pointerListener(
 
                     std.fs.File.stdout().writeAll(final_nl) catch {};
 
-                    if (state.autocopy) {
+                    if (state.cli.autocopy) {
                         var child = std.process.Child.init(
                             &[_][]const u8{ "wl-copy", final_no_nl },
                             state.allocator,
@@ -515,6 +525,7 @@ pub fn main() !void {
     const params = comptime clap.parseParamsComptime(
         \\-a, --autocopy            Automatically copies the output to the clipboard (requires wl-clipboard)
         \\-f, --format <str>        Specifies the output format (cmyk, hex, rgb, hsl, hsv)
+        \\-l, --lowercase-hex       Outputs the hexcode in lowercase
         \\-h, --help                Show this help message
         \\-v, --version             Print version info
         \\
@@ -562,8 +573,11 @@ pub fn main() !void {
 
     var state = State{
         .allocator = allocator,
-        .autocopy = res.args.autocopy != 0,
-        .format = selected_format,
+        .cli = .{
+            .autocopy = res.args.autocopy != 0,
+            .format = selected_format,
+            .lowercase_hex = res.args.@"lowercase-hex" != 0,
+        },
     };
 
     // Get the registry from the display
