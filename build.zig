@@ -59,6 +59,10 @@ pub fn build(b: *std.Build) void {
     root_mod.addImport("wayland", wayland_module);
     root_mod.addImport("clap", clap.module("clap"));
 
+    root_mod.addImport("build_options", b.createModule(.{
+        .root_source_file = b.path("build.zig.zon"),
+    }));
+
     const exe = b.addExecutable(.{
         .name = "pickz",
         .root_module = root_mod,

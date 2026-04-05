@@ -5,6 +5,14 @@ const wl = wayland.client.wl;
 const zwlr = wayland.client.zwlr;
 const wp = wayland.client.wp;
 
+const ColorFormat = enum {
+    cmyk,
+    hex,
+    rgb,
+    hsl,
+    hsv,
+};
+
 const Screenshot = struct {
     width: u32 = 0,
     height: u32 = 0,
@@ -41,6 +49,7 @@ const State = struct {
     cursor_y: i32 = -1,
     running: bool = true,
     autocopy: bool = false,
+    format: ColorFormat = .hex,
     allocator: std.mem.Allocator,
     render_buffers: [2]RenderBuffer = .{ .{}, .{} },
     cursor_shape_manager: ?*wp.CursorShapeManagerV1 = null,
@@ -48,6 +57,77 @@ const State = struct {
     frame_callback: ?*wl.Callback = null,
     needs_redraw: bool = false,
 };
+
+fn rgbToHsl(r: u8, g: u8, b: u8) [3]f32 {
+    const rf = @as(f32, @floatFromInt(r)) / 255.0;
+    const gf = @as(f32, @floatFromInt(g)) / 255.0;
+    const bf = @as(f32, @floatFromInt(b)) / 255.0;
+
+    const cmax = @max(rf, @max(gf, bf));
+    const cmin = @min(rf, @min(gf, bf));
+    const delta = cmax - cmin;
+
+    var h: f32 = 0;
+    var s: f32 = 0;
+    const l: f32 = (cmax + cmin) / 2.0;
+
+    if (delta != 0.0) {
+        s = delta / (1.0 - @abs(2.0 * l - 1.0));
+        if (cmax == rf) {
+            h = 60.0 * @mod(((gf - bf) / delta), 6.0);
+        } else if (cmax == gf) {
+            h = 60.0 * (((bf - rf) / delta) + 2.0);
+        } else {
+            h = 60.0 * (((rf - gf) / delta) + 4.0);
+        }
+    }
+    if (h < 0) h += 360.0;
+    return .{ h, s * 100.0, l * 100.0 };
+}
+
+fn rgbToHsv(r: u8, g: u8, b: u8) [3]f32 {
+    const rf = @as(f32, @floatFromInt(r)) / 255.0;
+    const gf = @as(f32, @floatFromInt(g)) / 255.0;
+    const bf = @as(f32, @floatFromInt(b)) / 255.0;
+
+    const cmax = @max(rf, @max(gf, bf));
+    const cmin = @min(rf, @min(gf, bf));
+    const delta = cmax - cmin;
+
+    var h: f32 = 0;
+    var s: f32 = 0;
+    const v: f32 = cmax;
+
+    if (delta != 0.0) {
+        s = delta / cmax;
+        if (cmax == rf) {
+            h = 60.0 * @mod(((gf - bf) / delta), 6.0);
+        } else if (cmax == gf) {
+            h = 60.0 * (((bf - rf) / delta) + 2.0);
+        } else {
+            h = 60.0 * (((rf - gf) / delta) + 4.0);
+        }
+    }
+    if (h < 0) h += 360.0;
+    return .{ h, s * 100.0, v * 100.0 };
+}
+
+fn rgbToCmyk(r: u8, g: u8, b: u8) [4]f32 {
+    const rf = @as(f32, @floatFromInt(r)) / 255.0;
+    const gf = @as(f32, @floatFromInt(g)) / 255.0;
+    const bf = @as(f32, @floatFromInt(b)) / 255.0;
+
+    const cmax = @max(rf, @max(gf, bf));
+    const k = 1.0 - cmax;
+
+    if (k == 1.0) return .{ 0.0, 0.0, 0.0, 100.0 };
+
+    const c = (1.0 - rf - k) / (1.0 - k);
+    const m = (1.0 - gf - k) / (1.0 - k);
+    const y = (1.0 - bf - k) / (1.0 - k);
+
+    return .{ c * 100.0, m * 100.0, y * 100.0, k * 100.0 };
+}
 
 fn keyboardListener(
     keyboard: *wl.Keyboard,
@@ -57,7 +137,6 @@ fn keyboardListener(
     _ = keyboard;
     switch (event) {
         .key => |k| {
-            // Linux evdev keycode for ESC is 1
             if (k.key == 1 and k.state == .pressed) {
                 state.running = false;
             }
@@ -80,8 +159,6 @@ fn registryListener(
             } else if (std.mem.orderZ(u8, g.interface, wl.Seat.interface.name) == .eq) {
                 state.seat = registry.bind(g.name, wl.Seat, 5) catch return;
             } else if (std.mem.orderZ(u8, g.interface, wl.Output.interface.name) == .eq) {
-                // NOTE: For multi-monitor, we just grab the first for now.
-                // TODO: Build a list for multi-monitor.
                 if (state.output == null) {
                     state.output = registry.bind(g.name, wl.Output, 4) catch return;
                     state.output.?.setListener(*State, outputListener, state);
@@ -96,9 +173,7 @@ fn registryListener(
                     registry.bind(g.name, wp.CursorShapeManagerV1, 1) catch return;
             }
         },
-        .global_remove => |_| {
-            // We don't care about hotplugging
-        },
+        .global_remove => |_| {},
     }
 }
 
@@ -375,15 +450,45 @@ fn pointerListener(
                     const green = state.screenshot.pixels[idx + 1];
                     const red = state.screenshot.pixels[idx + 2];
 
-                    var buf_no_nl: [16]u8 = undefined;
-                    var buf_nl: [16]u8 = undefined;
-                    const hex_no_nl = std.fmt.bufPrint(&buf_no_nl, "#{X:0>2}{X:0>2}{X:0>2}", .{ red, green, blue }) catch return;
-                    const hex_with_nl = std.fmt.bufPrint(&buf_nl, "#{X:0>2}{X:0>2}{X:0>2}\n", .{ red, green, blue }) catch return;
-                    std.fs.File.stdout().writeAll(hex_with_nl) catch {};
+                    var buf_no_nl: [64]u8 = undefined;
+                    var buf_nl: [64]u8 = undefined;
+                    var len_no_nl: usize = 0;
+                    var len_nl: usize = 0;
+
+                    switch (state.format) {
+                        .hex => {
+                            len_no_nl = (std.fmt.bufPrint(&buf_no_nl, "#{X:0>2}{X:0>2}{X:0>2}", .{ red, green, blue }) catch return).len;
+                            len_nl = (std.fmt.bufPrint(&buf_nl, "#{X:0>2}{X:0>2}{X:0>2}\n", .{ red, green, blue }) catch return).len;
+                        },
+                        .rgb => {
+                            len_no_nl = (std.fmt.bufPrint(&buf_no_nl, "rgb({d}, {d}, {d})", .{ red, green, blue }) catch return).len;
+                            len_nl = (std.fmt.bufPrint(&buf_nl, "rgb({d}, {d}, {d})\n", .{ red, green, blue }) catch return).len;
+                        },
+                        .hsl => {
+                            const hsl = rgbToHsl(red, green, blue);
+                            len_no_nl = (std.fmt.bufPrint(&buf_no_nl, "hsl({d:.1}, {d:.1}%, {d:.1}%)", .{ hsl[0], hsl[1], hsl[2] }) catch return).len;
+                            len_nl = (std.fmt.bufPrint(&buf_nl, "hsl({d:.1}, {d:.1}%, {d:.1}%)\n", .{ hsl[0], hsl[1], hsl[2] }) catch return).len;
+                        },
+                        .hsv => {
+                            const hsv = rgbToHsv(red, green, blue);
+                            len_no_nl = (std.fmt.bufPrint(&buf_no_nl, "hsv({d:.1}, {d:.1}%, {d:.1}%)", .{ hsv[0], hsv[1], hsv[2] }) catch return).len;
+                            len_nl = (std.fmt.bufPrint(&buf_nl, "hsv({d:.1}, {d:.1}%, {d:.1}%)\n", .{ hsv[0], hsv[1], hsv[2] }) catch return).len;
+                        },
+                        .cmyk => {
+                            const cmyk = rgbToCmyk(red, green, blue);
+                            len_no_nl = (std.fmt.bufPrint(&buf_no_nl, "cmyk({d:.1}%, {d:.1}%, {d:.1}%, {d:.1}%)", .{ cmyk[0], cmyk[1], cmyk[2], cmyk[3] }) catch return).len;
+                            len_nl = (std.fmt.bufPrint(&buf_nl, "cmyk({d:.1}%, {d:.1}%, {d:.1}%, {d:.1}%)\n", .{ cmyk[0], cmyk[1], cmyk[2], cmyk[3] }) catch return).len;
+                        },
+                    }
+
+                    const final_no_nl = buf_no_nl[0..len_no_nl];
+                    const final_nl = buf_nl[0..len_nl];
+
+                    std.fs.File.stdout().writeAll(final_nl) catch {};
 
                     if (state.autocopy) {
                         var child = std.process.Child.init(
-                            &[_][]const u8{ "wl-copy", hex_no_nl },
+                            &[_][]const u8{ "wl-copy", final_no_nl },
                             state.allocator,
                         );
                         _ = child.spawnAndWait() catch |err| {
@@ -409,6 +514,7 @@ pub fn main() !void {
 
     const params = comptime clap.parseParamsComptime(
         \\-a, --autocopy            Automatically copies the output to the clipboard (requires wl-clipboard)
+        \\-f, --format <str>        Specifies the output format (cmyk, hex, rgb, hsl, hsv)
         \\-h, --help                Show this help message
         \\-v, --version             Print version info
         \\
@@ -428,8 +534,26 @@ pub fn main() !void {
         return clap.helpToFile(std.fs.File.stderr(), clap.Help, &params, .{});
     }
     if (res.args.version != 0) {
-        std.debug.print("pickz v0.1.0\n", .{});
+        std.debug.print("pickz v{s}\n", .{@import("build_options").version});
         return;
+    }
+
+    var selected_format: ColorFormat = .hex;
+    if (res.args.format) |fmt_str| {
+        if (std.mem.eql(u8, fmt_str, "cmyk")) {
+            selected_format = .cmyk;
+        } else if (std.mem.eql(u8, fmt_str, "rgb")) {
+            selected_format = .rgb;
+        } else if (std.mem.eql(u8, fmt_str, "hsl")) {
+            selected_format = .hsl;
+        } else if (std.mem.eql(u8, fmt_str, "hsv")) {
+            selected_format = .hsv;
+        } else if (std.mem.eql(u8, fmt_str, "hex")) {
+            selected_format = .hex;
+        } else {
+            std.debug.print("Invalid format: {s}\nValid options: cmyk, hex, rgb, hsl, hsv\n", .{fmt_str});
+            std.process.exit(1);
+        }
     }
 
     // Connect to the default Wayland display
@@ -439,6 +563,7 @@ pub fn main() !void {
     var state = State{
         .allocator = allocator,
         .autocopy = res.args.autocopy != 0,
+        .format = selected_format,
     };
 
     // Get the registry from the display
