@@ -555,23 +555,13 @@ pub fn main() !void {
         return;
     }
 
-    var selected_format: ColorFormat = .hex;
-    if (res.args.format) |fmt_str| {
-        if (std.mem.eql(u8, fmt_str, "cmyk")) {
-            selected_format = .cmyk;
-        } else if (std.mem.eql(u8, fmt_str, "rgb")) {
-            selected_format = .rgb;
-        } else if (std.mem.eql(u8, fmt_str, "hsl")) {
-            selected_format = .hsl;
-        } else if (std.mem.eql(u8, fmt_str, "hsv")) {
-            selected_format = .hsv;
-        } else if (std.mem.eql(u8, fmt_str, "hex")) {
-            selected_format = .hex;
-        } else {
+    const selected_format: ColorFormat = if (res.args.format) |fmt_str|
+        std.meta.stringToEnum(ColorFormat, fmt_str) orelse {
             std.debug.print("Invalid format: {s}\nValid options: cmyk, hex, rgb, hsl, hsv\n", .{fmt_str});
             std.process.exit(1);
         }
-    }
+    else
+        .hex;
 
     // Connect to the default Wayland display
     const display = try wl.Display.connect(null);
