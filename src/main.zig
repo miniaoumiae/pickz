@@ -304,12 +304,6 @@ fn frameListener(
     }
 }
 
-fn clampI32(value: i32, min: i32, max: i32) i32 {
-    if (value < min) return min;
-    if (value > max) return max;
-    return value;
-}
-
 fn drawLens(state: *State) void {
     if (state.frame_callback != null) {
         state.needs_redraw = true;
@@ -351,10 +345,10 @@ fn drawLens(state: *State) void {
     const stride: usize = @intCast(state.screenshot.stride);
 
     if (rb.last_cx >= 0 and rb.last_cy >= 0) {
-        const old_x0 = clampI32(rb.last_cx - outer_radius, 0, width_i32);
-        const old_y0 = clampI32(rb.last_cy - outer_radius, 0, height_i32);
-        const old_x1 = clampI32(rb.last_cx + outer_radius + 1, 0, width_i32);
-        const old_y1 = clampI32(rb.last_cy + outer_radius + 1, 0, height_i32);
+        const old_x0 = std.math.clamp(rb.last_cx - outer_radius, 0, width_i32);
+        const old_y0 = std.math.clamp(rb.last_cy - outer_radius, 0, height_i32);
+        const old_x1 = std.math.clamp(rb.last_cx + outer_radius + 1, 0, width_i32);
+        const old_y1 = std.math.clamp(rb.last_cy + outer_radius + 1, 0, height_i32);
         const row_bytes: usize = @intCast((old_x1 - old_x0) * 4);
 
         var y: i32 = old_y0;
@@ -493,14 +487,21 @@ fn pointerListener(
                     const fg_code: []const u8 = if (luminance > 128) "\x1b[30m" else "\x1b[97m";
 
                     var stdout_buf: [128]u8 = undefined;
-                    const colored_output = std.fmt.bufPrint(
-                        &stdout_buf,
-                        // \x1b[48;2;R;G;Bm sets the background color, \x1b[0m resets it
-                        "\x1b[48;2;{d};{d};{d}m{s}{s}\x1b[0m\n",
-                        .{ red, green, blue, fg_code, final_no_nl },
-                    ) catch return;
+                    const is_tty = std.posix.isatty(std.fs.File.stdout().handle);
 
-                    std.fs.File.stdout().writeAll(colored_output) catch {};
+                    if (is_tty) {
+                        const colored_output = std.fmt.bufPrint(
+                            &stdout_buf,
+                            // \x1b[48;2;R;G;Bm sets the background color, \x1b[0m resets it
+                            "\x1b[48;2;{d};{d};{d}m{s}{s}\x1b[0m\n",
+                            .{ red, green, blue, fg_code, final_no_nl },
+                        ) catch return;
+                        std.fs.File.stdout().writeAll(colored_output) catch {};
+                    } else {
+                        var plain_buf: [72]u8 = undefined;
+                        const plain_output = std.fmt.bufPrint(&plain_buf, "{s}\n", .{final_no_nl}) catch return;
+                        std.fs.File.stdout().writeAll(plain_output) catch {};
+                    }
 
                     if (state.cli.autocopy) {
                         var child = std.process.Child.init(
