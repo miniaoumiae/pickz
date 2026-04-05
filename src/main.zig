@@ -456,45 +456,49 @@ fn pointerListener(
                     const red = state.screenshot.pixels[idx + 2];
 
                     var buf_no_nl: [64]u8 = undefined;
-                    var buf_nl: [64]u8 = undefined;
                     var len_no_nl: usize = 0;
-                    var len_nl: usize = 0;
 
                     switch (state.cli.format) {
                         .hex => {
                             if (state.cli.lowercase_hex) {
                                 len_no_nl = (std.fmt.bufPrint(&buf_no_nl, "#{x:0>2}{x:0>2}{x:0>2}", .{ red, green, blue }) catch return).len;
-                                len_nl = (std.fmt.bufPrint(&buf_nl, "#{x:0>2}{x:0>2}{x:0>2}\n", .{ red, green, blue }) catch return).len;
                             } else {
                                 len_no_nl = (std.fmt.bufPrint(&buf_no_nl, "#{X:0>2}{X:0>2}{X:0>2}", .{ red, green, blue }) catch return).len;
-                                len_nl = (std.fmt.bufPrint(&buf_nl, "#{X:0>2}{X:0>2}{X:0>2}\n", .{ red, green, blue }) catch return).len;
                             }
                         },
                         .rgb => {
                             len_no_nl = (std.fmt.bufPrint(&buf_no_nl, "rgb({d}, {d}, {d})", .{ red, green, blue }) catch return).len;
-                            len_nl = (std.fmt.bufPrint(&buf_nl, "rgb({d}, {d}, {d})\n", .{ red, green, blue }) catch return).len;
                         },
                         .hsl => {
                             const hsl = rgbToHsl(red, green, blue);
                             len_no_nl = (std.fmt.bufPrint(&buf_no_nl, "hsl({d:.1}, {d:.1}%, {d:.1}%)", .{ hsl[0], hsl[1], hsl[2] }) catch return).len;
-                            len_nl = (std.fmt.bufPrint(&buf_nl, "hsl({d:.1}, {d:.1}%, {d:.1}%)\n", .{ hsl[0], hsl[1], hsl[2] }) catch return).len;
                         },
                         .hsv => {
                             const hsv = rgbToHsv(red, green, blue);
                             len_no_nl = (std.fmt.bufPrint(&buf_no_nl, "hsv({d:.1}, {d:.1}%, {d:.1}%)", .{ hsv[0], hsv[1], hsv[2] }) catch return).len;
-                            len_nl = (std.fmt.bufPrint(&buf_nl, "hsv({d:.1}, {d:.1}%, {d:.1}%)\n", .{ hsv[0], hsv[1], hsv[2] }) catch return).len;
                         },
                         .cmyk => {
                             const cmyk = rgbToCmyk(red, green, blue);
                             len_no_nl = (std.fmt.bufPrint(&buf_no_nl, "cmyk({d:.1}%, {d:.1}%, {d:.1}%, {d:.1}%)", .{ cmyk[0], cmyk[1], cmyk[2], cmyk[3] }) catch return).len;
-                            len_nl = (std.fmt.bufPrint(&buf_nl, "cmyk({d:.1}%, {d:.1}%, {d:.1}%, {d:.1}%)\n", .{ cmyk[0], cmyk[1], cmyk[2], cmyk[3] }) catch return).len;
                         },
                     }
 
                     const final_no_nl = buf_no_nl[0..len_no_nl];
-                    const final_nl = buf_nl[0..len_nl];
 
-                    std.fs.File.stdout().writeAll(final_nl) catch {};
+                    const luminance = (299 * @as(u32, red) + 587 * @as(u32, green) + 114 * @as(u32, blue)) / 1000;
+
+                    // \x1b[30m = ANSI black (color 0), \x1b[97m = ANSI bright white (color 15)
+                    const fg_code: []const u8 = if (luminance > 128) "\x1b[30m" else "\x1b[97m";
+
+                    var stdout_buf: [128]u8 = undefined;
+                    const colored_output = std.fmt.bufPrint(
+                        &stdout_buf,
+                        // \x1b[48;2;R;G;Bm sets the background color, \x1b[0m resets it
+                        "\x1b[48;2;{d};{d};{d}m{s}{s}\x1b[0m\n",
+                        .{ red, green, blue, fg_code, final_no_nl },
+                    ) catch return;
+
+                    std.fs.File.stdout().writeAll(colored_output) catch {};
 
                     if (state.cli.autocopy) {
                         var child = std.process.Child.init(
