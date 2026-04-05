@@ -38,6 +38,8 @@ const State = struct {
     draw_pixels: []u8 = &[_]u8{},
     cursor_shape_manager: ?*wp.CursorShapeManagerV1 = null,
     cursor_shape_device: ?*wp.CursorShapeDeviceV1 = null,
+    frame_callback: ?*wl.Callback = null,
+    needs_redraw: bool = false,
 };
 
 fn keyboardListener(
@@ -175,9 +177,32 @@ fn layerSurfaceListener(
     }
 }
 
+fn frameListener(
+    callback: *wl.Callback,
+    event: wl.Callback.Event,
+    state: *State,
+) void {
+    switch (event) {
+        .done => {
+            callback.destroy();
+            state.frame_callback = null;
+
+            if (state.needs_redraw) {
+                drawLens(state);
+            }
+        },
+    }
+}
+
 fn drawLens(state: *State) void {
+    if (state.frame_callback != null) {
+        state.needs_redraw = true;
+        return;
+    }
     if (state.surface == null or state.draw_buffer == null) return;
     if (state.cursor_x < 0 or state.cursor_y < 0) return;
+
+    state.needs_redraw = false;
 
     const scale = state.output_scale;
     const cx = state.cursor_x * scale;
@@ -239,6 +264,8 @@ fn drawLens(state: *State) void {
 
     state.surface.?.attach(state.draw_buffer, 0, 0);
     state.surface.?.damageBuffer(0, 0, @intCast(state.screenshot.width), @intCast(state.screenshot.height));
+    state.frame_callback = state.surface.?.frame() catch return;
+    state.frame_callback.?.setListener(*State, frameListener, state);
     state.surface.?.commit();
 }
 
@@ -255,11 +282,13 @@ fn pointerListener(
             if (state.cursor_shape_device) |device| {
                 device.setShape(e.serial, .crosshair);
             }
+            state.needs_redraw = true;
             drawLens(state);
         },
         .motion => |m| {
             state.cursor_x = m.surface_x.toInt();
             state.cursor_y = m.surface_y.toInt();
+            state.needs_redraw = true;
             drawLens(state);
         },
         .button => |b| {
