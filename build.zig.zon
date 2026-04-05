@@ -36,6 +36,10 @@
             .url = "git+https://github.com/ifreund/zig-wayland.git#d5be93142e5b564037ccecfa084cd6755c850c37",
             .hash = "wayland-0.6.0-dev-lQa1koD8AQDA1Ez_XdLOqA8QPvwKyxsAanpCIsZEb3OS",
         },
+        .clap = .{
+            .url = "https://github.com/Hejsil/zig-clap/archive/refs/tags/0.11.0.tar.gz",
+            .hash = "clap-0.11.0-oBajB-HnAQDPCKYzwF7rO3qDFwRcD39Q0DALlTSz5H7e",
+        },
     },
     .paths = .{
         "build.zig",

@@ -1,5 +1,6 @@
 const std = @import("std");
 const wayland = @import("wayland");
+const clap = @import("clap");
 const wl = wayland.client.wl;
 const zwlr = wayland.client.zwlr;
 const wp = wayland.client.wp;
@@ -31,6 +32,8 @@ const State = struct {
     cursor_x: i32 = -1,
     cursor_y: i32 = -1,
     running: bool = true,
+    autocopy: bool = false,
+    allocator: std.mem.Allocator,
     draw_buffer: ?*wl.Buffer = null,
     draw_pixels: []u8 = &[_]u8{},
     cursor_shape_manager: ?*wp.CursorShapeManagerV1 = null,
@@ -271,9 +274,24 @@ fn pointerListener(
                     const green = state.screenshot.pixels[idx + 1];
                     const red = state.screenshot.pixels[idx + 2];
 
-                    var buf: [16]u8 = undefined;
-                    const hex = std.fmt.bufPrint(&buf, "#{X:0>2}{X:0>2}{X:0>2}\n", .{ red, green, blue }) catch return;
-                    std.fs.File.stdout().writeAll(hex) catch {};
+                    var buf_no_nl: [16]u8 = undefined;
+                    var buf_nl: [16]u8 = undefined;
+                    const hex_no_nl = std.fmt.bufPrint(&buf_no_nl, "#{X:0>2}{X:0>2}{X:0>2}", .{ red, green, blue }) catch return;
+                    const hex_with_nl = std.fmt.bufPrint(&buf_nl, "#{X:0>2}{X:0>2}{X:0>2}\n", .{ red, green, blue }) catch return;
+                    std.fs.File.stdout().writeAll(hex_with_nl) catch {};
+
+                    if (state.autocopy) {
+                        var child = std.process.Child.init(
+                            &[_][]const u8{ "wl-copy", hex_no_nl },
+                            state.allocator,
+                        );
+                        _ = child.spawnAndWait() catch |err| {
+                            std.debug.print(
+                                "Error: Could not copy to clipboard. Is 'wl-clipboard' installed? ({})\n",
+                                .{err},
+                            );
+                        };
+                    }
                 }
 
                 state.running = false;
@@ -284,11 +302,43 @@ fn pointerListener(
 }
 
 pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const params = comptime clap.parseParamsComptime(
+        \\-a, --autocopy            Automatically copies the output to the clipboard (requires wl-clipboard)
+        \\-h, --help                Show this help message
+        \\-v, --version             Print version info
+        \\
+    );
+
+    var diag = clap.Diagnostic{};
+    var res = clap.parse(clap.Help, &params, clap.parsers.default, .{
+        .diagnostic = &diag,
+        .allocator = allocator,
+    }) catch |err| {
+        try diag.reportToFile(std.fs.File.stderr(), err);
+        return err;
+    };
+    defer res.deinit();
+
+    if (res.args.help != 0) {
+        return clap.helpToFile(std.fs.File.stderr(), clap.Help, &params, .{});
+    }
+    if (res.args.version != 0) {
+        std.debug.print("pickz v0.1.0\n", .{});
+        return;
+    }
+
     // Connect to the default Wayland display
     const display = try wl.Display.connect(null);
     defer display.disconnect();
 
-    var state = State{};
+    var state = State{
+        .allocator = allocator,
+        .autocopy = res.args.autocopy != 0,
+    };
 
     // Get the registry from the display
     const registry = try display.getRegistry();

@@ -4,6 +4,7 @@ const wayland = @import("wayland");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const clap = b.dependency("clap", .{});
 
     // 1. Generate the Wayland protocol bindings (client side)
     const scanner = wayland.Scanner.create(b, .{});
@@ -56,6 +57,7 @@ pub fn build(b: *std.Build) void {
 
     // 2. Add the module to our executable
     root_mod.addImport("wayland", wayland_module);
+    root_mod.addImport("clap", clap.module("clap"));
 
     const exe = b.addExecutable(.{
         .name = "pickz",
