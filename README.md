@@ -1,14 +1,24 @@
+## Usage
+
+Just pick a color 😺!
+
+## Options
+
+See `pickz -h`
+
 ## Dependencies
 
 **Compile-time:**
-* `zig` (0.15.x)
-* `pkg-config`
-* `wayland-protocols`
-* `wlr-protocols`
-* `libwayland-client` (C headers)
+
+- `zig` (0.15.x)
+- `pkg-config`
+- `wayland-protocols`
+- `wlr-protocols`
+- `libwayland-client` (C headers)
 
 **Runtime:**
-* `wl-clipboard` (Optional, required for the `-a` autocopy feature)
+
+- `wl-clipboard` (Optional, required for the `-a` autocopy feature)
 
 ## Manual Installation
 
