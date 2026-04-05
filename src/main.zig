@@ -15,6 +15,14 @@ const Screenshot = struct {
     ready: bool = false,
 };
 
+const RenderBuffer = struct {
+    buffer: ?*wl.Buffer = null,
+    pixels: []u8 = &[_]u8{},
+    busy: bool = false,
+    last_cx: i32 = -1,
+    last_cy: i32 = -1,
+};
+
 const State = struct {
     compositor: ?*wl.Compositor = null,
     shm: ?*wl.Shm = null,
@@ -34,8 +42,7 @@ const State = struct {
     running: bool = true,
     autocopy: bool = false,
     allocator: std.mem.Allocator,
-    draw_buffer: ?*wl.Buffer = null,
-    draw_pixels: []u8 = &[_]u8{},
+    render_buffers: [2]RenderBuffer = .{ .{}, .{} },
     cursor_shape_manager: ?*wp.CursorShapeManagerV1 = null,
     cursor_shape_device: ?*wp.CursorShapeDeviceV1 = null,
     frame_callback: ?*wl.Callback = null,
@@ -177,6 +184,27 @@ fn layerSurfaceListener(
     }
 }
 
+fn bufferReleaseListener(
+    buffer: *wl.Buffer,
+    event: wl.Buffer.Event,
+    state: *State,
+) void {
+    switch (event) {
+        .release => {
+            for (&state.render_buffers) |*rb| {
+                if (rb.buffer == buffer) {
+                    rb.busy = false;
+                    break;
+                }
+            }
+
+            if (state.needs_redraw and state.frame_callback == null) {
+                drawLens(state);
+            }
+        },
+    }
+}
+
 fn frameListener(
     callback: *wl.Callback,
     event: wl.Callback.Event,
@@ -194,21 +222,38 @@ fn frameListener(
     }
 }
 
+fn clampI32(value: i32, min: i32, max: i32) i32 {
+    if (value < min) return min;
+    if (value > max) return max;
+    return value;
+}
+
 fn drawLens(state: *State) void {
     if (state.frame_callback != null) {
         state.needs_redraw = true;
         return;
     }
-    if (state.surface == null or state.draw_buffer == null) return;
+    if (state.surface == null) return;
     if (state.cursor_x < 0 or state.cursor_y < 0) return;
+
+    var target_buffer: ?*RenderBuffer = null;
+    for (&state.render_buffers) |*rb| {
+        if (!rb.busy and rb.buffer != null) {
+            target_buffer = rb;
+            break;
+        }
+    }
+    if (target_buffer == null) {
+        state.needs_redraw = true;
+        return;
+    }
 
     state.needs_redraw = false;
 
+    const rb = target_buffer.?;
     const scale = state.output_scale;
     const cx = state.cursor_x * scale;
     const cy = state.cursor_y * scale;
-
-    @memcpy(state.draw_pixels, state.screenshot.pixels);
 
     const inner_radius: i32 = 100;
     const border_thickness: i32 = 5;
@@ -217,6 +262,29 @@ fn drawLens(state: *State) void {
     const outer_radius = inner_radius + border_thickness;
     const outer_radius_sq = outer_radius * outer_radius;
     const inner_radius_sq = inner_radius * inner_radius;
+    const box_size = (outer_radius * 2) + 1;
+
+    const width_i32: i32 = @intCast(state.screenshot.width);
+    const height_i32: i32 = @intCast(state.screenshot.height);
+    const stride: usize = @intCast(state.screenshot.stride);
+
+    if (rb.last_cx >= 0 and rb.last_cy >= 0) {
+        const old_x0 = clampI32(rb.last_cx - outer_radius, 0, width_i32);
+        const old_y0 = clampI32(rb.last_cy - outer_radius, 0, height_i32);
+        const old_x1 = clampI32(rb.last_cx + outer_radius + 1, 0, width_i32);
+        const old_y1 = clampI32(rb.last_cy + outer_radius + 1, 0, height_i32);
+        const row_bytes: usize = @intCast((old_x1 - old_x0) * 4);
+
+        var y: i32 = old_y0;
+        while (y < old_y1) : (y += 1) {
+            const row_start = @as(usize, @intCast(y)) * stride + @as(usize, @intCast(old_x0)) * 4;
+            const dst = rb.pixels[row_start .. row_start + row_bytes];
+            const src = state.screenshot.pixels[row_start .. row_start + row_bytes];
+            @memcpy(dst, src);
+        }
+
+        state.surface.?.damageBuffer(old_x0, old_y0, box_size, box_size);
+    }
 
     var border_b: u8 = 0;
     var border_g: u8 = 0;
@@ -242,28 +310,32 @@ fn drawLens(state: *State) void {
                 const dst_idx = @as(usize, @intCast(target_y)) * state.screenshot.stride + @as(usize, @intCast(target_x)) * 4;
 
                 if (dist_sq > inner_radius_sq) {
-                    state.draw_pixels[dst_idx] = border_b;
-                    state.draw_pixels[dst_idx + 1] = border_g;
-                    state.draw_pixels[dst_idx + 2] = border_r;
-                    state.draw_pixels[dst_idx + 3] = 255;
+                    rb.pixels[dst_idx] = border_b;
+                    rb.pixels[dst_idx + 1] = border_g;
+                    rb.pixels[dst_idx + 2] = border_r;
+                    rb.pixels[dst_idx + 3] = 255;
                 } else {
                     const src_x = cx + @divTrunc(dx, zoom);
                     const src_y = cy + @divTrunc(dy, zoom);
 
                     if (src_x >= 0 and src_x < state.screenshot.width and src_y >= 0 and src_y < state.screenshot.height) {
                         const src_idx = @as(usize, @intCast(src_y)) * state.screenshot.stride + @as(usize, @intCast(src_x)) * 4;
-                        state.draw_pixels[dst_idx] = state.screenshot.pixels[src_idx];
-                        state.draw_pixels[dst_idx + 1] = state.screenshot.pixels[src_idx + 1];
-                        state.draw_pixels[dst_idx + 2] = state.screenshot.pixels[src_idx + 2];
-                        state.draw_pixels[dst_idx + 3] = 255;
+                        rb.pixels[dst_idx] = state.screenshot.pixels[src_idx];
+                        rb.pixels[dst_idx + 1] = state.screenshot.pixels[src_idx + 1];
+                        rb.pixels[dst_idx + 2] = state.screenshot.pixels[src_idx + 2];
+                        rb.pixels[dst_idx + 3] = 255;
                     }
                 }
             }
         }
     }
 
-    state.surface.?.attach(state.draw_buffer, 0, 0);
-    state.surface.?.damageBuffer(0, 0, @intCast(state.screenshot.width), @intCast(state.screenshot.height));
+    rb.last_cx = cx;
+    rb.last_cy = cy;
+
+    rb.busy = true;
+    state.surface.?.attach(rb.buffer, 0, 0);
+    state.surface.?.damageBuffer(cx - outer_radius, cy - outer_radius, box_size, box_size);
     state.frame_callback = state.surface.?.frame() catch return;
     state.frame_callback.?.setListener(*State, frameListener, state);
     state.surface.?.commit();
@@ -430,33 +502,36 @@ pub fn main() !void {
     }
 
     const size = state.screenshot.stride * state.screenshot.height;
-    const fd = std.posix.memfd_create("pickz-draw", 0) catch unreachable;
-    std.posix.ftruncate(fd, size) catch unreachable;
+    for (&state.render_buffers) |*rb| {
+        const fd = std.posix.memfd_create("pickz-draw", 0) catch unreachable;
+        std.posix.ftruncate(fd, size) catch unreachable;
 
-    state.draw_pixels = std.posix.mmap(
-        null,
-        size,
-        std.posix.PROT.READ | std.posix.PROT.WRITE,
-        std.posix.MAP{ .TYPE = .SHARED },
-        fd,
-        0,
-    ) catch unreachable;
+        rb.pixels = std.posix.mmap(
+            null,
+            size,
+            std.posix.PROT.READ | std.posix.PROT.WRITE,
+            std.posix.MAP{ .TYPE = .SHARED },
+            fd,
+            0,
+        ) catch unreachable;
 
-    const pool = state.shm.?.createPool(fd, @intCast(size)) catch unreachable;
-    defer pool.destroy();
+        const pool = state.shm.?.createPool(fd, @intCast(size)) catch unreachable;
+        defer pool.destroy();
 
-    state.draw_buffer = try pool.createBuffer(
-        0,
-        @intCast(state.screenshot.width),
-        @intCast(state.screenshot.height),
-        @intCast(state.screenshot.stride),
-        state.screenshot.format,
-    );
-
-    @memcpy(state.draw_pixels, state.screenshot.pixels);
+        rb.buffer = try pool.createBuffer(
+            0,
+            @intCast(state.screenshot.width),
+            @intCast(state.screenshot.height),
+            @intCast(state.screenshot.stride),
+            state.screenshot.format,
+        );
+        rb.buffer.?.setListener(*State, bufferReleaseListener, &state);
+        @memcpy(rb.pixels, state.screenshot.pixels);
+    }
 
     state.surface.?.setBufferScale(state.output_scale);
-    state.surface.?.attach(state.draw_buffer, 0, 0);
+    state.render_buffers[0].busy = true;
+    state.surface.?.attach(state.render_buffers[0].buffer, 0, 0);
     state.surface.?.damageBuffer(0, 0, @intCast(state.screenshot.width), @intCast(state.screenshot.height));
     state.surface.?.commit();
 
