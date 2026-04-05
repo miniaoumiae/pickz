@@ -85,7 +85,7 @@ fn registryListener(
             }
         },
         .global_remove => |_| {
-            // We won't care about hotplugging
+            // We don't care about hotplugging
         },
     }
 }
