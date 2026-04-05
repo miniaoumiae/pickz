@@ -157,25 +157,27 @@ fn registryListener(
 ) void {
     switch (event) {
         .global => |g| {
-            if (std.mem.orderZ(u8, g.interface, wl.Compositor.interface.name) == .eq) {
-                state.compositor = registry.bind(g.name, wl.Compositor, @min(g.version, 5)) catch return;
-            } else if (std.mem.orderZ(u8, g.interface, wl.Shm.interface.name) == .eq) {
-                state.shm = registry.bind(g.name, wl.Shm, 1) catch return;
-            } else if (std.mem.orderZ(u8, g.interface, wl.Seat.interface.name) == .eq) {
-                state.seat = registry.bind(g.name, wl.Seat, 5) catch return;
-            } else if (std.mem.orderZ(u8, g.interface, wl.Output.interface.name) == .eq) {
+            if (std.mem.orderZ(u8, g.interface, wl.Output.interface.name) == .eq) {
                 if (state.output == null) {
                     state.output = registry.bind(g.name, wl.Output, 4) catch return;
                     state.output.?.setListener(*State, outputListener, state);
                 }
-            } else if (std.mem.orderZ(u8, g.interface, zwlr.LayerShellV1.interface.name) == .eq) {
-                state.layer_shell = registry.bind(g.name, zwlr.LayerShellV1, @min(g.version, 4)) catch return;
-            } else if (std.mem.orderZ(u8, g.interface, zwlr.ScreencopyManagerV1.interface.name) == .eq) {
-                state.screencopy_manager =
-                    registry.bind(g.name, zwlr.ScreencopyManagerV1, @min(g.version, 3)) catch return;
-            } else if (std.mem.orderZ(u8, g.interface, wp.CursorShapeManagerV1.interface.name) == .eq) {
-                state.cursor_shape_manager =
-                    registry.bind(g.name, wp.CursorShapeManagerV1, 1) catch return;
+                return;
+            }
+
+            const bindings = .{
+                .{ wl.Compositor, &state.compositor, 5 },
+                .{ wl.Shm, &state.shm, 1 },
+                .{ wl.Seat, &state.seat, 5 },
+                .{ zwlr.LayerShellV1, &state.layer_shell, 4 },
+                .{ zwlr.ScreencopyManagerV1, &state.screencopy_manager, 3 },
+                .{ wp.CursorShapeManagerV1, &state.cursor_shape_manager, 1 },
+            };
+
+            inline for (bindings) |b| {
+                if (std.mem.orderZ(u8, g.interface, b[0].interface.name) == .eq) {
+                    b[1].* = registry.bind(g.name, b[0], @min(g.version, b[2])) catch return;
+                }
             }
         },
         .global_remove => |_| {},
